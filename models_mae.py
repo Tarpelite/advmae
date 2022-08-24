@@ -37,10 +37,38 @@ class MaskedAutoencoderViT(nn.Module):
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim), requires_grad=False)  # fixed sin-cos embedding
 
         self.blocks = nn.ModuleList([
-            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, qk_scale=None, norm_layer=norm_layer)
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
         # --------------------------------------------------------------------------
+        # MAE noise generator specifics
+
+        self.noise_decoder_embed = nn.Linear(embed_dim, decoder_embed_dim, bias=True)
+
+        self.noise_mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
+
+        self.noise_decoder_pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, decoder_embed_dim), requires_grad=False)  # fixed sin-cos embedding
+
+        self.noise_decoder_blocks = nn.ModuleList([
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            for i in range(decoder_depth)])
+
+        self.noise_decoder_norm = norm_layer(decoder_embed_dim)
+        self.noise_decoder_pred = nn.Linear(decoder_embed_dim, patch_size**2 * in_chans, bias=True) # decoder to patch
+
+
+        # --------------------------------------------------------------------------
+        # MAE noise encoder specifics
+        self.noise_patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
+        # num_patches = self.patch_embed.num_patches
+
+        self.noise_cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.noise_pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim), requires_grad=False)  # fixed sin-cos embedding
+        self.noise_blocks = nn.ModuleList([
+            Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
+            for i in range(depth)])
+        self.noise_norm = norm_layer(embed_dim)
+
 
         # --------------------------------------------------------------------------
         # MAE decoder specifics
@@ -51,7 +79,7 @@ class MaskedAutoencoderViT(nn.Module):
         self.decoder_pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, decoder_embed_dim), requires_grad=False)  # fixed sin-cos embedding
 
         self.decoder_blocks = nn.ModuleList([
-            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, qk_scale=None, norm_layer=norm_layer)
+            Block(decoder_embed_dim, decoder_num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(decoder_depth)])
 
         self.decoder_norm = norm_layer(decoder_embed_dim)
@@ -168,6 +196,54 @@ class MaskedAutoencoderViT(nn.Module):
         x = self.norm(x)
 
         return x, mask, ids_restore
+    
+    def forward_noise_generator(self, x, ids_restore):
+        # embed tokens
+        x = self.noise_decoder_embed(x)
+
+        # append mask tokens to sequence
+        mask_tokens = self.noise_mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
+        x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
+        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
+        x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
+
+        # add pos embed
+        x = x + self.noise_decoder_pos_embed
+
+        # apply Transformer blocks
+        for blk in self.noise_decoder_blocks:
+            x = blk(x)
+        x = self.noise_decoder_norm(x)
+
+        # predictor projection
+        x = self.noise_decoder_pred(x)
+
+        # remove cls token
+        x = x[:, 1:, :]
+
+        return x
+    
+    def forward_noise_encoder(self, x, mask_ratio=0.0):
+        # embed patches
+        x = self.noise_patch_embed(x)
+
+        # add pos embed w/o cls token
+        x = x + self.noise_pos_embed[:, 1:, :]
+
+        # masking: length -> length * mask_ratio
+        x, mask, ids_restore = self.random_masking(x, mask_ratio)
+
+        # append cls token
+        cls_token = self.noise_cls_token + self.pos_embed[:, :1, :]
+        cls_tokens = cls_token.expand(x.shape[0], -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)
+
+        # apply Transformer blocks
+        for blk in self.noise_blocks:
+            x = blk(x)
+        x = self.noise_norm(x)
+
+        return x, mask, ids_restore
 
     def forward_decoder(self, x, ids_restore):
         # embed tokens
@@ -215,8 +291,14 @@ class MaskedAutoencoderViT(nn.Module):
 
     def forward(self, imgs, mask_ratio=0.75):
         latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
-        pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
+        noise = self.forward_noise_generator(latent, ids_restore)
+        noise_mask_ratio = 0.0
+        noise_latent, noise_mask, ids_restore = self.forward_encoder(noise.view_as(imgs), noise_mask_ratio)
+        
+        pred = self.forward_decoder(noise_latent, ids_restore)  # [N, L, p*p*3]
         loss = self.forward_loss(imgs, pred, mask)
+        scale_loss = noise.mean()
+        loss = loss + 0.1*scale_loss
         return loss, pred, mask
 
 
