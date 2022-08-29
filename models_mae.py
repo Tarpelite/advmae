@@ -95,17 +95,24 @@ class MaskedAutoencoderViT(nn.Module):
         # initialize (and freeze) pos_embed by sin-cos embedding
         pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.patch_embed.num_patches**.5), cls_token=True)
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+        self.noise_pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
 
         decoder_pos_embed = get_2d_sincos_pos_embed(self.decoder_pos_embed.shape[-1], int(self.patch_embed.num_patches**.5), cls_token=True)
         self.decoder_pos_embed.data.copy_(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0))
+        self.noise_decoder_pos_embed.data.copy_(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0))
 
         # initialize patch_embed like nn.Linear (instead of nn.Conv2d)
         w = self.patch_embed.proj.weight.data
         torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
 
+        w = self.noise_patch_embed.proj.weight.data
+        torch.nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
+
         # timm's trunc_normal_(std=.02) is effectively normal_(std=0.02) as cutoff is too big (2.)
         torch.nn.init.normal_(self.cls_token, std=.02)
         torch.nn.init.normal_(self.mask_token, std=.02)
+        torch.nn.init.normal_(self.noise_cls_token, std=.02)
+        torch.nn.init.normal_(self.noise_mask_token, std=.02)
 
         # initialize nn.Linear and nn.LayerNorm
         self.apply(self._init_weights)
@@ -293,12 +300,15 @@ class MaskedAutoencoderViT(nn.Module):
         latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
         noise = self.forward_noise_generator(latent, ids_restore)
         noise_mask_ratio = 0.0
-        noise_latent, noise_mask, ids_restore = self.forward_encoder(noise.view_as(imgs), noise_mask_ratio)
+        noise_imgs = self.unpatchify(noise)
+        noise_latent, noise_mask, ids_restore = self.forward_encoder(noise_imgs, noise_mask_ratio)
         
         pred = self.forward_decoder(noise_latent, ids_restore)  # [N, L, p*p*3]
         loss = self.forward_loss(imgs, pred, mask)
-        scale_loss = noise.mean()
+        print("recons loss", loss)
+        scale_loss = torch.norm(noise)
         loss = loss + 0.1*scale_loss
+        print("scale loss", scale_loss)
         return loss, pred, mask
 
 
