@@ -190,7 +190,7 @@ class MaskedAutoencoderViT(nn.Module):
         x = x + self.pos_embed[:, 1:, :]
 
         # masking: length -> length * mask_ratio
-        x, mask, ids_restore = self.random_masking(x, mask_ratio)
+        # x, mask, ids_restore = self.random_masking(x, mask_ratio)
 
         # append cls token
         cls_token = self.cls_token + self.pos_embed[:, :1, :]
@@ -202,17 +202,17 @@ class MaskedAutoencoderViT(nn.Module):
             x = blk(x)
         x = self.norm(x)
 
-        return x, mask, ids_restore
+        return x
     
-    def forward_noise_generator(self, x, ids_restore):
+    def forward_noise_generator(self, x):
         # embed tokens
         x = self.noise_decoder_embed(x)
 
         # append mask tokens to sequence
-        mask_tokens = self.noise_mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
-        x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
-        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
-        x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
+        # mask_tokens = self.noise_mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
+        # x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)  # no cls token
+        # x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))  # unshuffle
+        # x = torch.cat([x[:, :1, :], x_], dim=1)  # append cls token
 
         # add pos embed
         x = x + self.noise_decoder_pos_embed
@@ -238,7 +238,7 @@ class MaskedAutoencoderViT(nn.Module):
         x = x + self.noise_pos_embed[:, 1:, :]
 
         # masking: length -> length * mask_ratio
-        x, mask, ids_restore = self.random_masking(x, mask_ratio)
+        # x, mask, ids_restore = self.random_masking(x, mask_ratio)
 
         # append cls token
         cls_token = self.noise_cls_token + self.pos_embed[:, :1, :]
@@ -250,7 +250,7 @@ class MaskedAutoencoderViT(nn.Module):
             x = blk(x)
         x = self.noise_norm(x)
 
-        return x, mask, ids_restore
+        return x
 
     def forward_decoder(self, x, ids_restore):
         # embed tokens
@@ -297,19 +297,28 @@ class MaskedAutoencoderViT(nn.Module):
         return loss
 
     def forward(self, imgs, mask_ratio=0.75):
-        latent, mask, ids_restore = self.forward_encoder(imgs, mask_ratio)
-        noise = self.forward_noise_generator(latent, ids_restore)
+        latent = self.forward_encoder(imgs, mask_ratio)
+        noise = self.forward_noise_generator(latent)
         noise_mask_ratio = 0.0
         noise_imgs = self.unpatchify(noise)
-        noise_latent, noise_mask, ids_restore = self.forward_encoder(noise_imgs, noise_mask_ratio)
-        
-        pred = self.forward_decoder(noise_latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(imgs, pred, mask)
-        print("recons loss", loss)
-        scale_loss = torch.norm(noise)
-        loss = loss + 0.1*scale_loss
-        print("scale loss", scale_loss)
-        return loss, pred, mask
+
+        shuffle_idx = torch.randperm(imgs.shape[0])
+        shuffle_noise = noise_imgs[shuffle_idx]
+        shuffle_adv_imgs = imgs + torch.clamp(shuffle_noise, -0.3, 0.3)
+
+        with torch.no_grad():
+            raw_intent = self.forward_noise_encoder(imgs)[:,0,:]
+            noise_intent = self.forward_noise_encoder(shuffle_adv_imgs)[:,0,:]
+            raw_inent  = raw_intent / raw_intent.norm(dim=1, keepdim=True)
+            noise_intent = noise_intent / noise_intent.norm(dim=1, keepdim=True)
+
+            logits_per_example = noise_intent @ raw_intent.t()
+        loss_adv = nn.functional.cross_entropy(logits_per_example, shuffle_idx.to(logits_per_example.device))
+        loss_scale = torch.norm(noise)
+        loss = loss_adv + 0.1*loss_scale
+              
+        print("adv loss:{}, scale loss:{}".format(loss_adv.item(), loss_scale.item()))
+        return loss
 
 
 def mae_vit_base_patch16_dec512d8b(**kwargs):
