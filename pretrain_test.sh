@@ -1,7 +1,7 @@
 #!/bin/sh
 export JOB_DIR=models
 export IMAGENET_DIR=/mnt/tianyu/workspace/adv_seo_clip/food-101/images
-export OUTPUT_DIR=/mnt/tianyu/workspace/adv_seo_clip/models/pretrain_on_food101_v5
+export OUTPUT_DIR=/mnt/tianyu/workspace/adv_seo_clip/models/pretrain_on_food101_v6
 export CKPT_PATH=/mnt/tianyu/workspace/adv_seo_clip/mae_pretrain_vit_base_noise.pth
 
 python -m torch.distributed.launch --nproc_per_node=4 --nnodes=1 main_pretrain.py \

@@ -40,6 +40,22 @@ class MaskedAutoencoderViT(nn.Module):
             Block(embed_dim, num_heads, mlp_ratio, qkv_bias=True, norm_layer=norm_layer)
             for i in range(depth)])
         self.norm = norm_layer(embed_dim)
+
+        for param in self.patch_embed.parameters():
+            param.requires_grad = False
+
+        self.cls_token.requires_grad = False
+        # for param in self.cls_token.parameters():
+        #     param.requires_grad = False
+        
+        
+        for layer in self.blocks:
+            for param in layer.parameters():
+                param.requires_grad = False
+
+        for param in self.norm.parameters():
+            param.requires_grad = False  
+
         # --------------------------------------------------------------------------
         # MAE noise generator specifics
 
@@ -69,6 +85,18 @@ class MaskedAutoencoderViT(nn.Module):
             for i in range(depth)])
         self.noise_norm = norm_layer(embed_dim)
 
+        for param in self.noise_patch_embed.parameters():
+            param.requires_grad = False
+        
+        self.noise_cls_token.requires_grad = False
+        
+        
+        for layer in self.noise_blocks:
+            for param in layer.parameters():
+                param.requires_grad = False
+        
+        for param in self.noise_norm.parameters():
+            param.requires_grad = False
 
         # --------------------------------------------------------------------------
         # MAE decoder specifics
@@ -306,13 +334,13 @@ class MaskedAutoencoderViT(nn.Module):
         shuffle_noise = noise_imgs[shuffle_idx]
         shuffle_adv_imgs = imgs + torch.clamp(shuffle_noise, -0.3, 0.3)
 
-        with torch.no_grad():
-            raw_intent = self.forward_noise_encoder(imgs)[:,0,:]
-            noise_intent = self.forward_noise_encoder(shuffle_adv_imgs)[:,0,:]
-            raw_inent  = raw_intent / raw_intent.norm(dim=1, keepdim=True)
-            noise_intent = noise_intent / noise_intent.norm(dim=1, keepdim=True)
+        
+        raw_intent = self.forward_noise_encoder(imgs)[:,0,:]
+        noise_intent = self.forward_noise_encoder(shuffle_adv_imgs)[:,0,:]
+        raw_inent  = raw_intent / raw_intent.norm(dim=1, keepdim=True)
+        noise_intent = noise_intent / noise_intent.norm(dim=1, keepdim=True)
 
-            logits_per_example = noise_intent @ raw_intent.t()
+        logits_per_example = noise_intent @ raw_intent.t()
         loss_adv = nn.functional.cross_entropy(logits_per_example, shuffle_idx.to(logits_per_example.device))
         loss_scale = torch.norm(noise)
         loss = loss_adv + 0.1*loss_scale
