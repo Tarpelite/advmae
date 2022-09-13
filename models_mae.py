@@ -325,9 +325,9 @@ class MaskedAutoencoderViT(nn.Module):
         return loss
 
     def forward(self, imgs, mask_ratio=0.75):
-        latent = self.forward_encoder(imgs, mask_ratio)
+
+        latent = self.forward_encoder(imgs, mask_ratio=0.0)
         noise = self.forward_noise_generator(latent)
-        noise_mask_ratio = 0.0
         noise_imgs = self.unpatchify(noise)
 
         shuffle_idx = torch.randperm(imgs.shape[0])
@@ -335,9 +335,9 @@ class MaskedAutoencoderViT(nn.Module):
         shuffle_adv_imgs = imgs + torch.clamp(shuffle_noise, -0.3, 0.3)
 
         
-        raw_intent = self.forward_noise_encoder(imgs)[:,0,:]
-        noise_intent = self.forward_noise_encoder(shuffle_adv_imgs)[:,0,:]
-        raw_inent  = raw_intent / raw_intent.norm(dim=1, keepdim=True)
+        raw_intent = self.forward_encoder(imgs, mask_ratio=0.0)[:,0,:]
+        noise_intent = self.forward_encoder(shuffle_adv_imgs, mask_ratio=0.0)[:,0,:]
+        raw_intent  = raw_intent / raw_intent.norm(dim=1, keepdim=True)
         noise_intent = noise_intent / noise_intent.norm(dim=1, keepdim=True)
 
         logits_per_example = noise_intent @ raw_intent.t()
